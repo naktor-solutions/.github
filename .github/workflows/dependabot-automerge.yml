@@ -1,0 +1,54 @@
+name: Dependabot auto-merge
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Solo PRs de Dependabot; para el resto el job se salta (coste 0)
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    steps:
+      - name: Metadatos del bump
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Major -> etiqueta para revision humana
+        if: ${{ steps.meta.outputs.update-type == 'version-update:semver-major' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr edit "$PR_URL" --add-label needs-human-review || true
+          echo "Major bump: se queda para revision humana."
+
+      - name: Patch/minor -> aprobar
+        if: ${{ steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr review --approve "$PR_URL" \
+            --body "Bot: auto-aprobado (${{ steps.meta.outputs.update-type }} \`${{ steps.meta.outputs.old-version }}\` -> \`${{ steps.meta.outputs.new-version }}\`). Merge cuando CI este verde." \
+          || echo "::warning::approve omitido (posible re-aprobacion en re-run)"
+
+      - name: Patch/minor -> merge cuando CI verde
+        if: ${{ steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          if gh pr merge --auto --squash "$PR_URL"; then
+            echo "Auto-merge activado: esperara CI verde."
+          else
+            echo "Feature auto-merge no disponible (plan B): esperar checks y mergear."
+            gh pr checks "$PR_URL" --watch --interval 30 --fail-fast
+            gh pr merge --squash "$PR_URL"
+          fi
